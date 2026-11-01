@@ -1,0 +1,83 @@
+name: Publish Flatpak repository
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: flatpak-pages
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.select.outputs.available }}
+    steps:
+      - name: Select newest published stable release with a Flatpak repository
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" | jq -s '[.[][] | select(.draft == false and .prerelease == false) | select(any(.assets[]; .name == "plexter-flatpak-repository.zip"))] | sort_by(.published_at) | last // empty' > release.json
+          if [ ! -s release.json ]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo 'No published stable release contains a Flatpak repository.'
+            exit 0
+          fi
+          tag=$(jq -r '.tag_name' release.json)
+          gh release download "$tag" --repo "$GH_REPO" --pattern plexter-flatpak-repository.zip
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+          echo "Selected published release $tag"
+      - name: Validate and unpack public repository
+        if: steps.select.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, stat, zipfile
+          release = json.loads(pathlib.Path('release.json').read_text())
+          required = {'flatpak/plexter.flatpakref', 'flatpak/plexter-version.txt',
+                      'flatpak/repo/config', 'flatpak/repo/summary', 'flatpak/repo/summary.sig',
+                      'flatpak/repo/plexter-signing-key.gpg'}
+          with zipfile.ZipFile('plexter-flatpak-repository.zip') as archive:
+              files = archive.infolist()
+              names = [entry.filename for entry in files]
+              if len(names) != len(set(names)) or not required.issubset(names):
+                  raise ValueError('Flatpak archive has duplicate or missing files')
+              if sum(entry.file_size for entry in files) > 1_000_000_000:
+                  raise ValueError('Flatpak archive exceeds the GitHub Pages 1 GB limit')
+              for entry in files:
+                  path = pathlib.PurePosixPath(entry.filename)
+                  if (path.is_absolute() or '..' in path.parts or '\\' in entry.filename
+                          or not path.parts or path.parts[0] != 'flatpak'
+                          or stat.S_ISLNK(entry.external_attr >> 16)):
+                      raise ValueError(f'Unsafe archive entry: {entry.filename}')
+              if archive.read('flatpak/plexter-version.txt').decode('ascii').strip() != release['tag_name']:
+                  raise ValueError('Flatpak version does not match release tag')
+              archive.extractall('site')
+          PY
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.select.outputs.available == 'true'
+        with:
+          path: site
+
+  deploy:
+    if: needs.prepare.outputs.available == 'true'
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
