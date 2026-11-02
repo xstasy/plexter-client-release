@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       available: ${{ steps.select.outputs.available }}
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+      metadata: ${{ steps.metadata.outputs.json }}
+      tag: ${{ steps.metadata.outputs.tag }}
     steps:
       - name: Select newest published stable release with a Flatpak repository
         id: select
@@ -71,7 +74,24 @@ jobs:
                   raise ValueError('Flatpak build number does not match release tag')
               archive.extractall('site')
           PY
+      - name: Record deployed metadata hashes
+        id: metadata
+        if: steps.select.outputs.available == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          release = json.loads(pathlib.Path('release.json').read_text())
+          paths = ['flatpak/repo/summary', 'flatpak/repo/summary.sig', 'flatpak/repo/plexter-signing-key.gpg', 'flatpak/plexter-version.txt']
+          if '-b' in release['tag_name']:
+              paths += ['flatpak/plexter-build.txt', 'flatpak/repo/plexter-build-number']
+          hashes = {p: hashlib.sha256((pathlib.Path('site') / p).read_bytes()).hexdigest() for p in paths}
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('json=' + json.dumps(hashes, separators=(',', ':')), file=output)
+              print('tag=' + release['tag_name'], file=output)
+          PY
       - uses: actions/upload-pages-artifact@v3
+        id: upload
         if: steps.select.outputs.available == 'true'
         with:
           path: site
@@ -85,4 +105,50 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/github-script@v7
+        env:
+          ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+          EXPECTED_METADATA: ${{ needs.prepare.outputs.metadata }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        with:
+          script: |
+            const crypto = require('crypto');
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+            const params = {owner: context.repo.owner, repo: context.repo.repo};
+            const version = crypto.createHash('sha256').update(`${process.env.GITHUB_REPOSITORY}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`).digest('hex').slice(0, 40);
+            const created = await github.request('POST /repos/{owner}/{repo}/pages/deployments', {
+              ...params, artifact_id: Number(process.env.ARTIFACT_ID), pages_build_version: version,
+              oidc_token: await core.getIDToken()
+            });
+            const id = created.data.id || created.data.status_url?.split('/').pop() || version;
+            const deadline = Date.now() + 600000;
+            let completed = false;
+            while (Date.now() < deadline) {
+              const status = (await github.request('GET /repos/{owner}/{repo}/pages/deployments/{deploymentId}', {...params, deploymentId: id})).data;
+              if (status.status === 'succeed') { completed = true; break; }
+              if (['deployment_failed', 'deployment_perms_error', 'deployment_content_failed', 'deployment_cancelled', 'deployment_lost'].includes(status.status)) throw new Error(`Pages deployment failed: ${status.status}`);
+              await sleep(5000);
+            }
+            if (!completed) {
+              await github.request('POST /repos/{owner}/{repo}/pages/deployments/{deploymentId}/cancel', {...params, deploymentId: id});
+              throw new Error('Pages deployment timed out');
+            }
+            const base = `https://${context.repo.owner}.github.io/${context.repo.repo}/`;
+            core.setOutput('page_url', base);
+            const expected = JSON.parse(process.env.EXPECTED_METADATA);
+            const verifyDeadline = Date.now() + 900000;
+            let failures = [];
+            do {
+              failures = [];
+              for (const [path, digest] of Object.entries(expected)) {
+                try {
+                  const response = await fetch(new URL(path, base), {cache: 'no-store', signal: AbortSignal.timeout(30000)});
+                  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                  const actual = crypto.createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex');
+                  if (actual !== digest) throw new Error(`expected ${digest}, got ${actual}`);
+                } catch (error) { failures.push(`${path}: ${error.message}`); }
+              }
+              if (!failures.length) break;
+              if (Date.now() < verifyDeadline) await sleep(30000);
+            } while (Date.now() < verifyDeadline);
+            if (failures.length) throw new Error(`Pages metadata mismatch for ${process.env.RELEASE_TAG}: ${failures.join('; ')}`);
