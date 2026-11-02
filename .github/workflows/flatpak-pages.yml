@@ -115,7 +115,7 @@ jobs:
             const crypto = require('crypto');
             const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
             const params = {owner: context.repo.owner, repo: context.repo.repo};
-            const version = crypto.createHash('sha256').update(`${process.env.GITHUB_REPOSITORY}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`).digest('hex').slice(0, 40);
+            const version = context.sha;
             const created = await github.request('POST /repos/{owner}/{repo}/pages/deployments', {
               ...params, artifact_id: Number(process.env.ARTIFACT_ID), pages_build_version: version,
               oidc_token: await core.getIDToken()
