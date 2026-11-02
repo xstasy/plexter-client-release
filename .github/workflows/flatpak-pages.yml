@@ -1,5 +1,6 @@
 name: Publish Flatpak repository
 
+# Each release tag must point to a public commit not previously deployed by Pages.
 on:
   release:
     types: [published]
