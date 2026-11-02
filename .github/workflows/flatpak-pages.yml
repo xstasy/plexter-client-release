@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api --paginate "repos/$GH_REPO/releases?per_page=100" | jq -s '[.[][] | select(.draft == false and .prerelease == false) | select(any(.assets[]; .name == "plexter-flatpak-repository.zip"))] | sort_by(.published_at) | last // empty' > release.json
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" | jq -s '[.[][] | select(.draft == false and .prerelease == false) | select(any(.assets[]; .name == "plexter-flatpak-repository.zip"))] | sort_by(.tag_name | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-b(?<build>[0-9]+))?$") | [(.major|tonumber), (.minor|tonumber), (.patch|tonumber), ((.build // "0")|tonumber)]) | last // empty' > release.json
           if [ ! -s release.json ]; then
             echo 'available=false' >> "$GITHUB_OUTPUT"
             echo 'No published stable release contains a Flatpak repository.'
