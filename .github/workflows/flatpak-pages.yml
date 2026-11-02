@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, pathlib, stat, zipfile
+          import json, pathlib, re, stat, zipfile
           release = json.loads(pathlib.Path('release.json').read_text())
           required = {'flatpak/plexter.flatpakref', 'flatpak/plexter-version.txt',
                       'flatpak/repo/config', 'flatpak/repo/summary', 'flatpak/repo/summary.sig',
@@ -62,8 +62,13 @@ jobs:
                           or not path.parts or path.parts[0] != 'flatpak'
                           or stat.S_ISLNK(entry.external_attr >> 16)):
                       raise ValueError(f'Unsafe archive entry: {entry.filename}')
-              if archive.read('flatpak/plexter-version.txt').decode('ascii').strip() != release['tag_name']:
+              tag = release['tag_name']
+              match = re.fullmatch(r'(\d+\.\d+\.\d+)(?:-b(\d+))?', tag)
+              if not match or archive.read('flatpak/plexter-version.txt').decode('ascii').strip() != match.group(1):
                   raise ValueError('Flatpak version does not match release tag')
+              if match.group(2) and (archive.read('flatpak/plexter-build.txt').decode('ascii').strip() != match.group(2)
+                                     or archive.read('flatpak/repo/plexter-build-number').decode('ascii').strip() != match.group(2)):
+                  raise ValueError('Flatpak build number does not match release tag')
               archive.extractall('site')
           PY
       - uses: actions/upload-pages-artifact@v3
