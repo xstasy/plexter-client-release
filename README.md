@@ -10,8 +10,8 @@
 | Linux x64 | [.deb](https://github.com/xstasy/plexter-client-release/releases/latest/download/plexter-linux-x64.deb) · [.flatpak](https://github.com/xstasy/plexter-client-release/releases/latest/download/plexter-linux-x64.flatpak)
 
 ## Flatpak
-
 `flatpak install --user https://xstasy.github.io/plexter-client-release/flatpak/plexter.flatpakref`
 
 `flatpak run cloud.ftown.plexter.client`
+
 `flatpak update` to update.
